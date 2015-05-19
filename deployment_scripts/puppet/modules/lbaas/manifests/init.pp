@@ -104,6 +104,7 @@ class lbaas (
     'DEFAULT/interface_driver': value => $lbaas_interface_driver;
     'DEFAULT/ovs_use_veth':     value => $lbaas_ovs_use_veth;
     'DEFAULT/device_driver':    value => $lbaas_device_driver;
+    'haproxy/user_group':       value => 'nobody';
   }
 
   Neutron_lbaas_config<||> ~> Service[$lbaas::params::lbaas_agent_service]
