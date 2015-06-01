@@ -128,7 +128,7 @@ class lbaas (
 
   exec { 'enable_lbaas_dashboard':
     command => "/bin/echo \"OPENSTACK_NEUTRON_NETWORK['enable_lb'] = True\" >> $lbaas::params::dashboard_settings",
-    unless  => "/bin/egrep \"^OPENSTACK_NEUTRON_NETWORK['enable_lb'] = True\" $lbaas:params::dashboard_settings",
+    unless  => "/bin/egrep \"^OPENSTACK_NEUTRON_NETWORK['enable_lb'] = True\" $lbaas::params::dashboard_settings",
   }
 
   Exec['enable_lbaas_dashboard'] ~> Service[$lbaas::params::dashboard_service]
