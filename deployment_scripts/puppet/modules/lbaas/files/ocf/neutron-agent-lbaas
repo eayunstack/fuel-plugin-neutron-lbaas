@@ -37,20 +37,24 @@ PATH=/usr/sbin:/usr/bin
 OCF_RESKEY_binary_default="neutron-lbaas-agent"
 OCF_RESKEY_dist_config_default="/usr/share/neutron/neutron-dist.conf"
 OCF_RESKEY_config_default="/etc/neutron/neutron.conf"
+OCF_RESKEY_keystone_config_default="/etc/keystone/keystone.conf"
 OCF_RESKEY_plugin_config_default="/etc/neutron/lbaas_agent.ini"
 OCF_RESKEY_user_default="neutron"
 OCF_RESKEY_pid_default="${HA_RSCTMP}/${__SCRIPT_NAME}/${__SCRIPT_NAME}.pid"
+OCF_RESKEY_os_auth_url_default="http://localhost:5000/v2.0"
 OCF_RESKEY_log_file_default="/var/log/neutron/lbaas-agent.log"
 OCF_RESKEY_debug_default='false'
 
 : ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
 : ${OCF_RESKEY_dist_config=${OCF_RESKEY_dist_config_default}}
 : ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
+: ${OCF_RESKEY_keystone_config=${OCF_RESKEY_keystone_config_default}}
 : ${OCF_RESKEY_plugin_config=${OCF_RESKEY_plugin_config_default}}
 : ${OCF_RESKEY_user=${OCF_RESKEY_user_default}}
 : ${OCF_RESKEY_pid=${OCF_RESKEY_pid_default}}
 : ${OCF_RESKEY_log_file=${OCF_RESKEY_log_file_default}}
 : ${OCF_RESKEY_debug=${OCF_RESKEY_debug_default}}
+: ${OCF_RESKEY_os_auth_url=${OCF_RESKEY_os_auth_url_default}}
 
 #######################################################################
 
@@ -107,6 +111,22 @@ Location of the OpenStack Neutron Service (neutron-server) configuration file
 </longdesc>
 <shortdesc lang="en">OpenStack Neutron Server (neutron-server) config file</shortdesc>
 <content type="string" default="${OCF_RESKEY_config_default}" />
+</parameter>
+
+<parameter name="keystone_config" unique="0" required="0">
+<longdesc lang="en">
+Location of the Keystone configuration file
+</longdesc>
+<shortdesc lang="en">OpenStack Keystone config file</shortdesc>
+<content type="string" default="${OCF_RESKEY_keystone_config_default}" />
+</parameter>
+
+<parameter name="os_auth_url" unique="0" required="0">
+<longdesc lang="en">
+URL of keystone
+</longdesc>
+<shortdesc lang="en">Keystone URL</shortdesc>
+<content type="string" default="${OCF_RESKEY_os_auth_url_default}" />
 </parameter>
 
 <parameter name="plugin_config" unique="0" required="0">
@@ -214,6 +234,22 @@ neutron_lbaas_agent_validate() {
 }
 
 
+setup_auth() {
+    # setup token-based authentication if it possible
+    AUTH_TOKEN=""
+    if [[ -f $OCF_RESKEY_keystone_config ]] ; then
+        AUTH_TOKEN=$(grep -v '#' $OCF_RESKEY_keystone_config | grep -i 'admin_token\s*=\s*' | awk -F'=' '{print $2}')
+    fi
+
+    AUTH_TAIL=""
+    if [[ -n "$AUTH_TOKEN" ]] ; then
+        AUTH_TAIL="--admin-auth-url=${OCF_RESKEY_os_auth_url} --auth-token=${AUTH_TOKEN}"
+    fi
+
+    true
+}
+
+
 neutron_lbaas_agent_status() {
     local pid
     local f_pid
@@ -272,6 +308,64 @@ neutron_lbaas_agent_monitor() {
 }
 
 
+get_ns_list() {
+    # get lbaas namespace
+    local rv=`ip netns list | grep -Ee "^qlbaas-.*"`
+    echo $rv
+}
+
+
+get_pid_list_for_ns_list() {
+    local ns_list="$1"
+    local pids=`for netns in $ns_list ; do ip netns exec $netns lsof -n -i -t ; done`
+
+    echo $pids
+}
+
+
+clean_up() {
+    # kill processes inside netnamespace
+    ns_list=`get_ns_list`
+
+    # kill all proceses from all lbaas net.namespaces, that using ip
+    count=3
+    while [ $count -gt 0 ] ; do
+        inside_ns_pids=`get_pid_list_for_ns_list "$ns_list"`
+        if [ -z "$inside_ns_pids" ] ; then
+            break
+        fi
+
+        for ns_pid in $inside_ns_pids ; do
+            ocf_run kill $ns_pid
+        done
+
+        sleep 1
+        count=$(($count - 1))
+    done
+
+    # kill all remaining proceses, that not died by simple kill
+    inside_ns_pids=`get_pid_list_for_ns_list "$ns_list"`
+    if [ ! -z "$inside_ns_pids" ] ; then
+        for ns_pid in $inside_ns_pids ; do
+            ocf_run kill -9 $ns_pid
+        done
+    fi
+
+    # cleanup network interface
+    q-agent-cleanup.py --agent=lbaas --cleanup-ports
+}
+
+
+clean_up_namespace() {
+    # use clean_up before it
+    ns_list=`get_ns_list`
+    if [ ! -z "$ns_list" ] ; then
+        for ns in $ns_list ; do
+            ocf_run ip --force netns delete $ns
+        done
+    fi
+}
+
 neutron_lbaas_agent_start() {
     local rc
 
@@ -281,6 +375,10 @@ neutron_lbaas_agent_start() {
         ocf_log info "OpenStack Neutron LBaaS agent (${OCF_RESKEY_binary}) already running"
         return $OCF_SUCCESS
     fi
+
+    clean_up
+    sleep 1
+    clean_up_namespace
 
     # run and detach to background neutron-lbaas-agent as daemon.
     # Don't use ocf_run as we're sending the tool's output
@@ -360,6 +458,12 @@ neutron_lbaas_agent_stop() {
         ocf_run kill -s KILL $pid
     fi
 
+    clean_up
+    sleep 1
+    clean_up_namespace
+    # reschedule to alive lbaas agent
+    q-agent-cleanup.py --agent=lbaas --reschedule --remove-self ${AUTH_TAIL} 2>&1 >> /var/log/neutron/rescheduling.log &
+
     ocf_log info "OpenStack Neutron LBaaS agent (${OCF_RESKEY_binary}) stopped"
 
     ocf_log debug "Delete pid file: ${OCF_RESKEY_pid} with content $(cat ${OCF_RESKEY_pid})"
@@ -379,6 +483,7 @@ esac
 
 # Anything except meta-data and help must pass validation
 neutron_lbaas_agent_validate || exit $?
+setup_auth || exit $?
 umask 0022
 
 # What kind of method was invoked?
