@@ -10,5 +10,6 @@ if $fuel_settings {
       'primary-controller' => true,
       default              => false
     },
+    auth_vip => $fuel_settings['management_vip'],
   }
 }

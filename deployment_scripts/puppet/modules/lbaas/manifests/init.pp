@@ -5,6 +5,7 @@ class lbaas (
   $lbaas_plugin           = 'neutron.services.loadbalancer.plugin.LoadBalancerPlugin',
   $ha_mode                = false,
   $primary_controller     = false,
+  $auth_vip               = 'localhost',
 ) {
 
   include lbaas::params
@@ -39,6 +40,7 @@ class lbaas (
 #we have to separate controllers' deployment here using waiting cycles.
 
     if $primary_controller {
+      $auth_url = "http://${auth_vip}:35357/v2.0"
 
       cs_resource { "p_${lbaas::params::lbaas_agent_service}":
         ensure          => present,
@@ -58,6 +60,9 @@ class lbaas (
           'stop'    => {
             'timeout' => '80',
           }
+        },
+        parameters      => {
+          'os_auth_url' => $auth_url,
         }
       }
 
